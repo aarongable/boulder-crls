@@ -2702,3 +2702,46 @@ func TestSerialsForIncident(t *testing.T) {
 	}
 	test.AssertNotError(t, err, "Error getting serials for incident")
 }
+
+type mockGetRevokedCertsServerStream struct {
+	grpc.ServerStream
+	output chan<- *corepb.CRLEntry
+}
+
+func (s mockGetRevokedCertsServerStream) Send(entry *corepb.CRLEntry) error {
+	s.output <- entry
+	return nil
+}
+
+func (s mockGetRevokedCertsServerStream) Context() context.Context {
+	return context.Background()
+}
+
+func TestGetRevokedCerts(t *testing.T) {
+	sa, _, cleanUp := initSA(t)
+	defer cleanUp()
+
+	stream := make(chan *corepb.CRLEntry)
+	mockServerStream := mockGetRevokedCertsServerStream{output: stream}
+	var err error
+	go func() {
+		err = sa.GetRevokedCerts(
+			&sapb.GetRevokedCertsRequest{
+				IssuerNameID:  1,
+				IssuedAfter:   time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
+				IssuedBefore:  time.Date(2022, time.January, 8, 0, 0, 0, 0, time.UTC).UnixNano(),
+				RevokedBefore: time.Date(2022, time.February, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
+			},
+			mockServerStream,
+		)
+		close(stream)
+	}()
+	entriesReceived := 0
+	for range stream {
+		entriesReceived++
+	}
+	if entriesReceived != 100_000 {
+		t.Fatalf("Received unexpected number of entries: %d", entriesReceived)
+	}
+	test.AssertNotError(t, err, "Error getting serials for incident")
+}

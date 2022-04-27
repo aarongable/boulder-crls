@@ -313,7 +313,7 @@ func (c *storageAuthorityClient) GetRevokedCerts(ctx context.Context, in *GetRev
 }
 
 type StorageAuthority_GetRevokedCertsClient interface {
-	Recv() (*GetRevokedCertsResponse, error)
+	Recv() (*proto.CRLEntry, error)
 	grpc.ClientStream
 }
 
@@ -321,8 +321,8 @@ type storageAuthorityGetRevokedCertsClient struct {
 	grpc.ClientStream
 }
 
-func (x *storageAuthorityGetRevokedCertsClient) Recv() (*GetRevokedCertsResponse, error) {
-	m := new(GetRevokedCertsResponse)
+func (x *storageAuthorityGetRevokedCertsClient) Recv() (*proto.CRLEntry, error) {
+	m := new(proto.CRLEntry)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
@@ -1104,7 +1104,7 @@ func _StorageAuthority_GetRevokedCerts_Handler(srv interface{}, stream grpc.Serv
 }
 
 type StorageAuthority_GetRevokedCertsServer interface {
-	Send(*GetRevokedCertsResponse) error
+	Send(*proto.CRLEntry) error
 	grpc.ServerStream
 }
 
@@ -1112,7 +1112,7 @@ type storageAuthorityGetRevokedCertsServer struct {
 	grpc.ServerStream
 }
 
-func (x *storageAuthorityGetRevokedCertsServer) Send(m *GetRevokedCertsResponse) error {
+func (x *storageAuthorityGetRevokedCertsServer) Send(m *proto.CRLEntry) error {
 	return x.ServerStream.SendMsg(m)
 }
 

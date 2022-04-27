@@ -2,12 +2,14 @@ package sa
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	mrand "math/rand"
 	"net"
 	"reflect"
 	"regexp"
@@ -2215,5 +2217,37 @@ func (ssa *SQLStorageAuthority) SerialsForIncident(req *sapb.SerialsForIncidentR
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+// GetRevokedCerts gets a request specifying an issuer and a period of time,
+// and writes to the output stream the set of all certificates issued by that
+// issuer during that period of time which have since been revoked.
+// NOTE: For now, this just returns a bunch of random data, not real results.
+func (ssa *SQLStorageAuthority) GetRevokedCerts(req *sapb.GetRevokedCertsRequest, stream sapb.StorageAuthority_GetRevokedCertsServer) error {
+	start := time.Unix(0, req.IssuedAfter)
+	end := time.Unix(0, req.IssuedBefore)
+	window := end.Sub(start).Nanoseconds()
+
+	numEntries := 100_000
+	for j := 0; j < numEntries; j++ {
+		var serialBytes [16]byte
+		_, _ = rand.Read(serialBytes[:])
+		serial := big.NewInt(0).SetBytes(serialBytes[:])
+
+		reason := int32(mrand.Intn(10))
+
+		revokedAt := time.Unix(0, start.UnixNano()+mrand.Int63n(window))
+
+		err := stream.Send(&corepb.CRLEntry{
+			Serial:    core.SerialToString(serial),
+			Reason:    reason,
+			RevokedAt: revokedAt.UnixNano(),
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

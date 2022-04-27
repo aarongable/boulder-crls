@@ -32,7 +32,7 @@ service StorageAuthority {
   rpc GetValidAuthorizations2(GetValidAuthorizationsRequest) returns (Authorizations) {}
   rpc KeyBlocked(KeyBlockedRequest) returns (Exists) {}
   rpc SerialsForIncident (SerialsForIncidentRequest) returns (stream IncidentSerial) {}
-  rpc GetRevokedCerts(GetRevokedCertsRequest) returns (stream GetRevokedCertsResponse) {}
+  rpc GetRevokedCerts(GetRevokedCertsRequest) returns (stream core.CRLEntry) {}
   // Adders
   rpc NewRegistration(core.Registration) returns (core.Registration) {}
   rpc UpdateRegistration(core.Registration) returns (google.protobuf.Empty) {}
@@ -298,10 +298,4 @@ message GetRevokedCertsRequest {
   int64 issuedAfter = 2; // Unix timestamp (nanoseconds)
   int64 issuedBefore = 3; // Unix timestamp (nanoseconds)
   int64 revokedBefore = 4; // Unix timestamp (nanoseconds)
-}
-
-message GetRevokedCertsResponse{
-  string serial = 1;
-  int32 reason = 2;
-  int64 revokedAt = 3; // Unix timestamp (nanoseconds)
 }
