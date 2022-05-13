@@ -1,5 +1,5 @@
 {
-  "updater": {
+  "crlUpdater": {
     "debugAddr": ":8021",
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
@@ -7,11 +7,11 @@
       "keyFile": "test/grpc-creds/crl-updater.boulder/key.pem"
     },
     "crlGeneratorService": {
-      "serverAddress": "localhost:9093",
+      "serverAddress": "ca.boulder:9106",
       "timeout": "15s"
     },
     "saService": {
-      "serverAddress": "localhost:9095",
+      "serverAddress": "sa.boulder:9095",
       "timeout": "15s"
     },
     "issuerCerts": [
@@ -20,7 +20,7 @@
       "/hierarchy/intermediate-cert-ecdsa-a.pem"
     ],
     "numShards": 10,
-    "lookbackPeriod": "100d",
+    "lookbackPeriod": "240h",
     "updatePeriod": "6h"
   },
 

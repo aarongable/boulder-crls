@@ -131,6 +131,7 @@ func loadBoulderIssuers(profileConfig issuance.ProfileConfig, issuerConfigs []is
 func main() {
 	caAddr := flag.String("ca-addr", "", "CA gRPC listen address override")
 	ocspAddr := flag.String("ocsp-addr", "", "OCSP gRPC listen address override")
+	crlAddr := flag.String("crl-addr", "", "CRL gRPC listen address override")
 	debugAddr := flag.String("debug-addr", "", "Debug server address override")
 	configFile := flag.String("config", "", "File path to the configuration file for this service")
 	flag.Parse()
@@ -151,6 +152,9 @@ func main() {
 	}
 	if *ocspAddr != "" {
 		c.CA.GRPCOCSPGenerator.Address = *ocspAddr
+	}
+	if *crlAddr != "" {
+		c.CA.GRPCCRLGenerator.Address = *crlAddr
 	}
 	if *debugAddr != "" {
 		c.CA.DebugAddr = *debugAddr
@@ -280,7 +284,7 @@ func main() {
 	healthpb.RegisterHealthServer(crlSrv, crlHealth)
 	wg.Add(1)
 	go func() {
-		cmd.FailOnError(cmd.FilterShutdownErrors(ocspSrv.Serve(crlListener)),
+		cmd.FailOnError(cmd.FilterShutdownErrors(crlSrv.Serve(crlListener)),
 			"CRLGenerator gRPC service failed")
 		wg.Done()
 	}()
