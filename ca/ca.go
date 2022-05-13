@@ -31,15 +31,6 @@ import (
 	sapb "github.com/letsencrypt/boulder/sa/proto"
 )
 
-// Metrics for CA statistics
-const (
-	csrExtensionCategory          = "category"
-	csrExtensionBasic             = "basic"
-	csrExtensionTLSFeature        = "tls-feature"
-	csrExtensionTLSFeatureInvalid = "tls-feature-invalid"
-	csrExtensionOther             = "other"
-)
-
 type certificateType string
 
 const (
@@ -79,7 +70,6 @@ type certificateAuthorityImpl struct {
 	clk                clock.Clock
 	log                blog.Logger
 	signatureCount     *prometheus.CounterVec
-	csrExtensionCount  *prometheus.CounterVec
 	orphanCount        *prometheus.CounterVec
 	adoptedOrphanCount *prometheus.CounterVec
 	signErrorCount     *prometheus.CounterVec
@@ -146,14 +136,6 @@ func NewCertificateAuthorityImpl(
 		return nil, err
 	}
 
-	csrExtensionCount := prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "csr_extensions",
-			Help: "Number of CSRs with extensions of the given category",
-		},
-		[]string{csrExtensionCategory})
-	stats.MustRegister(csrExtensionCount)
-
 	orphanCount := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "orphans",
@@ -184,7 +166,6 @@ func NewCertificateAuthorityImpl(
 		orphanQueue:        orphanQueue,
 		log:                logger,
 		signatureCount:     signatureCount,
-		csrExtensionCount:  csrExtensionCount,
 		orphanCount:        orphanCount,
 		adoptedOrphanCount: adoptedOrphanCount,
 		signErrorCount:     signErrorCount,

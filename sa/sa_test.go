@@ -2700,6 +2700,9 @@ func TestSerialsForIncident(t *testing.T) {
 		}
 		receivedSerials[serial.Serial] = true
 	}
+	test.AssertDeepEquals(t, receivedSerials, map[string]bool{
+		"1335": true, "1336": true, "1337": true, "1338": true,
+	})
 	test.AssertNotError(t, err, "Error getting serials for incident")
 }
 
@@ -2743,5 +2746,5 @@ func TestGetRevokedCerts(t *testing.T) {
 	if entriesReceived != 100_000 {
 		t.Fatalf("Received unexpected number of entries: %d", entriesReceived)
 	}
-	test.AssertNotError(t, err, "Error getting serials for incident")
+	test.AssertNotError(t, err, "Error getting revoked certs")
 }
