@@ -126,7 +126,7 @@ func (cu *crlUpdater) tick(ctx context.Context) {
 
 }
 
-// getWindowForShard computes the start time (inclusive) and end time (exclusive)
+// getShardBoundaries computes the start (inclusive) and end (exclusive) times
 // for a given integer-indexed CRL shard. The idea here is that shards should be
 // stable. Picture a timeline, divided into chunks. Number those chunks from 0
 // to cu.numShards, then repeat the cycle when you run out of numbers:
@@ -171,7 +171,7 @@ func (cu *crlUpdater) tick(ctx context.Context) {
 // there is a buffer of at least one whole chunk width between the actual
 // furthest-future expiration (generally atTime+90d) and the right-hand edge of
 // the window (atTime+lookforwardPeriod).
-func (cu *crlUpdater) getWindowForShard(atTime time.Time, shardID int64) (time.Time, time.Time) {
+func (cu *crlUpdater) getShardBoundaries(atTime time.Time, shardID int64) (time.Time, time.Time) {
 	// Ensure that the given shardID falls within the space of acceptable IDs.
 	shardID = shardID % cu.numShards
 
@@ -213,7 +213,7 @@ func (cu *crlUpdater) tickIssuer(ctx context.Context, atTime time.Time, id issua
 	for shardID := int64(0); shardID < cu.numShards; shardID++ {
 		// For now, process each shard serially. This prevents us fromt trying to
 		// load multiple shards-worth of CRL entries simultaneously.
-		expiresAfter, expiresBefore := cu.getWindowForShard(atTime, shardID)
+		expiresAfter, expiresBefore := cu.getShardBoundaries(atTime, shardID)
 
 		saStream, err := cu.sa.GetRevokedCerts(ctx, &sapb.GetRevokedCertsRequest{
 			IssuerNameID:  int64(id),
