@@ -2,14 +2,12 @@ package sa
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
-	mrand "math/rand"
 	"net"
 	"reflect"
 	"regexp"
@@ -2223,36 +2221,66 @@ func (ssa *SQLStorageAuthority) SerialsForIncident(req *sapb.SerialsForIncidentR
 // GetRevokedCerts gets a request specifying an issuer and a period of time,
 // and writes to the output stream the set of all certificates issued by that
 // issuer which expire during that period of time and which have been revoked.
-// NOTE: For now, this just returns a bunch of random data, not real results.
 func (ssa *SQLStorageAuthority) GetRevokedCerts(req *sapb.GetRevokedCertsRequest, stream sapb.StorageAuthority_GetRevokedCertsServer) error {
-	start := time.Unix(0, req.ExpiresAfter)
-	end := time.Unix(0, req.ExpiresBefore)
-	window := end.Sub(start).Nanoseconds()
+	atTime := time.Unix(0, req.RevokedBefore)
 
-	// query := `SELECT serial, revokedReason, revokedDate
-	// FROM certificateStatus
-	// WHERE notAfter >= ?
-	// AND notAfter < ?
-	// AND issuerID = ?`
+	// TODO: Analyze and optimize this query.
+	// Should we condition on `WHERE status = 'revoked'`?
+	// Should we condition on `WHERE revokedDate < atTime`?
+	// I think the answer to both of the above is no, since we don't have indexes
+	// on either of those columns.
+	query := `SELECT serial, status, revokedReason, revokedDate
+		FROM certificateStatus
+		WHERE notAfter >= ?
+		AND notAfter < ?
+		AND issuerID = ?`
+	params := []interface{}{
+		time.Unix(0, req.ExpiresAfter),
+		time.Unix(0, req.ExpiresBefore),
+		req.IssuerNameID,
+	}
 
-	numEntries := 100_000
-	for j := 0; j < numEntries; j++ {
-		var serialBytes [16]byte
-		_, _ = rand.Read(serialBytes[:])
-		serial := big.NewInt(0).SetBytes(serialBytes[:])
+	rows, err := ssa.dbReadOnlyMap.Query(query, params...)
+	if err != nil {
+		return fmt.Errorf("failed to read db: %w", err)
+	}
 
-		reason := int32(mrand.Intn(10))
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			ssa.log.AuditErrf("failed to close row reader: %w", err)
+		}
+	}()
 
-		expiresAt := time.Unix(0, start.UnixNano()+mrand.Int63n(window))
-		revokedAt := time.Unix(0, expiresAt.UnixNano()-mrand.Int63n((24*90*time.Hour).Nanoseconds()))
+	type entry struct {
+		Serial        string
+		Status        core.OCSPStatus
+		RevokedReason revocation.Reason
+		RevokedDate   time.Time
+	}
 
-		err := stream.Send(&corepb.CRLEntry{
-			Serial:    core.SerialToString(serial),
-			Reason:    reason,
-			RevokedAt: revokedAt.UnixNano(),
+	for rows.Next() {
+		var row entry
+		err = rows.Scan(&row.Serial, &row.Status, &row.RevokedReason, &row.RevokedDate)
+		if err != nil {
+			return fmt.Errorf("failed to read row: %w", err)
+		}
+
+		if row.Status != core.OCSPStatusRevoked {
+			continue
+		}
+
+		if row.RevokedDate.After(atTime) || row.RevokedDate.Equal(atTime) {
+			continue
+		}
+
+		err = stream.Send(&corepb.CRLEntry{
+			Serial:    row.Serial,
+			Reason:    int32(row.RevokedReason),
+			RevokedAt: row.RevokedDate.UnixNano(),
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to send entry: %w", err)
 		}
 	}
 
