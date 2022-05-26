@@ -1,4 +1,4 @@
-package main
+package notmain
 
 import (
 	"flag"
@@ -8,6 +8,7 @@ import (
 
 	capb "github.com/letsencrypt/boulder/ca/proto"
 	"github.com/letsencrypt/boulder/cmd"
+	cspb "github.com/letsencrypt/boulder/crl/storer/proto"
 	"github.com/letsencrypt/boulder/crl/updater"
 	"github.com/letsencrypt/boulder/features"
 	bgrpc "github.com/letsencrypt/boulder/grpc"
@@ -21,6 +22,7 @@ type Config struct {
 
 		CRLGeneratorService *cmd.GRPCClientConfig
 		SAService           *cmd.GRPCClientConfig
+		CRLStorerService    *cmd.GRPCClientConfig
 
 		// IssuerCerts is a list of paths to issuer certificates on disk. This
 		// controls the set of CRLs which will be published by this updater: it will
@@ -101,13 +103,17 @@ func main() {
 
 	clientMetrics := bgrpc.NewClientMetrics(scope)
 
+	caConn, err := bgrpc.ClientSetup(c.CRLUpdater.CRLGeneratorService, tlsConfig, clientMetrics, clk)
+	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to CRLGenerator")
+	cac := capb.NewCRLGeneratorClient(caConn)
+
 	saConn, err := bgrpc.ClientSetup(c.CRLUpdater.SAService, tlsConfig, clientMetrics, clk)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
 	sac := sapb.NewStorageAuthorityClient(saConn)
 
-	caConn, err := bgrpc.ClientSetup(c.CRLUpdater.CRLGeneratorService, tlsConfig, clientMetrics, clk)
-	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to CRLGenerator")
-	cac := capb.NewCRLGeneratorClient(caConn)
+	csConn, err := bgrpc.ClientSetup(c.CRLUpdater.CRLStorerService, tlsConfig, clientMetrics, clk)
+	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to CRLStorer")
+	csc := cspb.NewCRLStorerClient(csConn)
 
 	u, err := updater.NewUpdater(
 		issuers,
@@ -117,6 +123,7 @@ func main() {
 		c.CRLUpdater.UpdatePeriod.Duration,
 		sac,
 		cac,
+		csc,
 		scope,
 		logger,
 		clk,

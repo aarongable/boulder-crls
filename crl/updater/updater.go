@@ -2,7 +2,6 @@ package updater
 
 import (
 	"context"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	capb "github.com/letsencrypt/boulder/ca/proto"
+	cspb "github.com/letsencrypt/boulder/crl/storer/proto"
 	"github.com/letsencrypt/boulder/issuance"
 	blog "github.com/letsencrypt/boulder/log"
 	sapb "github.com/letsencrypt/boulder/sa/proto"
@@ -25,6 +25,7 @@ type crlUpdater struct {
 
 	sa sapb.StorageAuthorityClient
 	ca capb.CRLGeneratorClient
+	cs cspb.CRLStorerClient
 
 	tickHistogram    *prometheus.HistogramVec
 	generatedCounter *prometheus.CounterVec
@@ -41,6 +42,7 @@ func NewUpdater(
 	updatePeriod time.Duration,
 	sa sapb.StorageAuthorityClient,
 	ca capb.CRLGeneratorClient,
+	cs cspb.CRLStorerClient,
 	stats prometheus.Registerer,
 	log blog.Logger,
 	clk clock.Clock,
@@ -87,6 +89,7 @@ func NewUpdater(
 		updatePeriod,
 		sa,
 		ca,
+		cs,
 		tickHistogram,
 		generatedCounter,
 		log,
@@ -206,7 +209,26 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 		}
 	}
 
-	crlBytes := make([]byte, 0)
+	csStream, err := cu.cs.UploadCRL(ctx)
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error connecting to CRLStorer for shard %d: %w", shardID, err)
+	}
+
+	err = csStream.Send(&cspb.UploadCRLRequest{
+		Payload: &cspb.UploadCRLRequest_Metadata{
+			Metadata: &cspb.CRLMetadata{
+				IssuerNameID: int64(issuerID),
+				ShardID:      shardID,
+				Number:       atTime.UnixNano(),
+			},
+		},
+	})
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error sending CRLStorer metadata for shard %d: %w", shardID, err)
+	}
+
 	for {
 		out, err := caStream.Recv()
 		if err != nil {
@@ -217,23 +239,17 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 			return fmt.Errorf("failed to read CRL bytes for shard %d: %w", shardID, err)
 		}
 
-		crlBytes = append(crlBytes, out.Chunk...)
+		err = csStream.Send(&cspb.UploadCRLRequest{
+			Payload: &cspb.UploadCRLRequest_CrlChunk{
+				CrlChunk: out.Chunk,
+			},
+		})
+		if err != nil {
+			result = "failed"
+			return fmt.Errorf("error sending CRL bytes for shard %d: %w", shardID, err)
+		}
 	}
 
-	crl, err := x509.ParseDERCRL(crlBytes)
-	if err != nil {
-		result = "failed"
-		return fmt.Errorf("failed to parse CRL bytes for shard %d: %w", shardID, err)
-	}
-
-	err = cu.issuers[issuerID].CheckCRLSignature(crl)
-	if err != nil {
-		result = "failed"
-		return fmt.Errorf("failed to validate signature for shard %d: %w", shardID, err)
-	}
-
-	// TODO: Upload the CRL to flat-file storage somewhere.
-	cu.log.Debugf("got complete CRL for issuer %s, shard %d with %d entries", cu.issuers[issuerID].Subject.CommonName, shardID, len(crl.TBSCertList.RevokedCertificates))
 	return nil
 }
 
