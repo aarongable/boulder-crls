@@ -2233,11 +2233,13 @@ func (ssa *SQLStorageAuthority) GetRevokedCerts(req *sapb.GetRevokedCertsRequest
 		FROM certificateStatus
 		WHERE notAfter >= ?
 		AND notAfter < ?
-		AND issuerID = ?`
+		AND issuerID = ?
+		AND status = ?`
 	params := []interface{}{
 		time.Unix(0, req.ExpiresAfter),
 		time.Unix(0, req.ExpiresBefore),
 		req.IssuerNameID,
+		core.OCSPStatusRevoked,
 	}
 
 	rows, err := ssa.dbReadOnlyMap.Query(query, params...)
@@ -2264,10 +2266,6 @@ func (ssa *SQLStorageAuthority) GetRevokedCerts(req *sapb.GetRevokedCertsRequest
 		err = rows.Scan(&row.Serial, &row.Status, &row.RevokedReason, &row.RevokedDate)
 		if err != nil {
 			return fmt.Errorf("failed to read row: %w", err)
-		}
-
-		if row.Status != core.OCSPStatusRevoked {
-			continue
 		}
 
 		if row.RevokedDate.After(atTime) || row.RevokedDate.Equal(atTime) {
