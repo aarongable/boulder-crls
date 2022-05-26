@@ -2731,8 +2731,8 @@ func TestGetRevokedCerts(t *testing.T) {
 		err = sa.GetRevokedCerts(
 			&sapb.GetRevokedCertsRequest{
 				IssuerNameID:  1,
-				IssuedAfter:   time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
-				IssuedBefore:  time.Date(2022, time.January, 8, 0, 0, 0, 0, time.UTC).UnixNano(),
+				ExpiresAfter:  time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
+				ExpiresBefore: time.Date(2022, time.January, 8, 0, 0, 0, 0, time.UTC).UnixNano(),
 				RevokedBefore: time.Date(2022, time.February, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
 			},
 			mockServerStream,

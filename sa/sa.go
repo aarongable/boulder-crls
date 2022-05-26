@@ -2222,12 +2222,18 @@ func (ssa *SQLStorageAuthority) SerialsForIncident(req *sapb.SerialsForIncidentR
 
 // GetRevokedCerts gets a request specifying an issuer and a period of time,
 // and writes to the output stream the set of all certificates issued by that
-// issuer during that period of time which have since been revoked.
+// issuer which expire during that period of time and which have been revoked.
 // NOTE: For now, this just returns a bunch of random data, not real results.
 func (ssa *SQLStorageAuthority) GetRevokedCerts(req *sapb.GetRevokedCertsRequest, stream sapb.StorageAuthority_GetRevokedCertsServer) error {
-	start := time.Unix(0, req.IssuedAfter)
-	end := time.Unix(0, req.IssuedBefore)
+	start := time.Unix(0, req.ExpiresAfter)
+	end := time.Unix(0, req.ExpiresBefore)
 	window := end.Sub(start).Nanoseconds()
+
+	// query := `SELECT serial, revokedReason, revokedDate
+	// FROM certificateStatus
+	// WHERE notAfter >= ?
+	// AND notAfter < ?
+	// AND issuerID = ?`
 
 	numEntries := 100_000
 	for j := 0; j < numEntries; j++ {
@@ -2237,7 +2243,8 @@ func (ssa *SQLStorageAuthority) GetRevokedCerts(req *sapb.GetRevokedCertsRequest
 
 		reason := int32(mrand.Intn(10))
 
-		revokedAt := time.Unix(0, start.UnixNano()+mrand.Int63n(window))
+		expiresAt := time.Unix(0, start.UnixNano()+mrand.Int63n(window))
+		revokedAt := time.Unix(0, expiresAt.UnixNano()-mrand.Int63n((24*90*time.Hour).Nanoseconds()))
 
 		err := stream.Send(&corepb.CRLEntry{
 			Serial:    core.SerialToString(serial),

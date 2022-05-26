@@ -17,10 +17,11 @@ import (
 )
 
 type crlUpdater struct {
-	issuers        map[issuance.IssuerNameID]*issuance.Certificate
-	numShards      int64
-	lookbackPeriod time.Duration
-	updatePeriod   time.Duration
+	issuers           map[issuance.IssuerNameID]*issuance.Certificate
+	numShards         int64
+	lookbackPeriod    time.Duration
+	lookforwardPeriod time.Duration
+	updatePeriod      time.Duration
 
 	sa sapb.StorageAuthorityClient
 	ca capb.CRLGeneratorClient
@@ -36,6 +37,7 @@ func NewUpdater(
 	issuers []*issuance.Certificate,
 	numShards int64,
 	lookbackPeriod time.Duration,
+	lookforwardPeriod time.Duration,
 	updatePeriod time.Duration,
 	sa sapb.StorageAuthorityClient,
 	ca capb.CRLGeneratorClient,
@@ -56,9 +58,10 @@ func NewUpdater(
 		return nil, fmt.Errorf("must update CRLs at least every 7 days, got: %s", updatePeriod)
 	}
 
-	if lookbackPeriod.Nanoseconds()%numShards != 0 {
-		return nil, fmt.Errorf("lookbackPeriod (%d) must be evenly divisible by numShards (%d)",
-			lookbackPeriod.Nanoseconds(), numShards)
+	window := lookbackPeriod + lookforwardPeriod
+	if window.Nanoseconds()%numShards != 0 {
+		return nil, fmt.Errorf("total window (lookback+lookforward=%dns) must be evenly divisible by numShards (%d)",
+			window.Nanoseconds(), numShards)
 	}
 
 	tickHistogram := prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -80,6 +83,7 @@ func NewUpdater(
 		issuersByNameID,
 		numShards,
 		lookbackPeriod,
+		lookforwardPeriod,
 		updatePeriod,
 		sa,
 		ca,
@@ -122,28 +126,81 @@ func (cu *crlUpdater) tick(ctx context.Context) {
 
 }
 
-// Given:
-// - the number of CRL shards we want to maintain; and
-// - the number of days of historical issuance we want to cover by those shards
-// we can compute the "width" (number of nanoseconds covered by) each shard.
-// From there, given:
-// - a fixed point in time (here taken to be the 0 value of time.Time);
-// - the current time (or, rather, atTime); and
-// - the integer ID of a shard
-// we can compute the left-hand "edge" (starting point in time) of that shard.
-// Finally, we can compute the end time as the start time plus the width.
-// The first two items are data members on the crlUpdater. The last two are the
-// two arguments to this function.
+// getWindowForShard computes the start time (inclusive) and end time (exclusive)
+// for a given integer-indexed CRL shard. The idea here is that shards should be
+// stable. Picture a timeline, divided into chunks. Number those chunks from 0
+// to cu.numShards, then repeat the cycle when you run out of numbers:
+//
+//    chunk:  5     0     1     2     3     4     5     0     1     2     3
+// ...-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----...
+//                          ^  ^-atTime                         ^
+//    atTime-lookbackPeriod-┘          atTime+lookforwardPeriod-┘
+//
+// The width of each chunk is determined by dividing the total time window we
+// care about (lookbackPeriod+lookforwardPeriod) by the number of shards we
+// want (numShards).
+//
+// Even as "now" (atTime) moves forward, and the total window of expiration
+// times that we care about moves forward, the boundaries of each chunk remain
+// stable:
+//
+//    chunk:  5     0     1     2     3     4     5     0     1     2     3
+// ...-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----...
+//                                  ^  ^-atTime                         ^
+//            atTime-lookbackPeriod-┘          atTime+lookforwardPeriod-┘
+//
+// However, note that at essentially all times the window includes parts of two
+// different instances of the chunk which appears at its ends. For example,
+// in the second diagram above, the window includes almost all of the middle
+// chunk labeled "3", but also includes just a little bit of the rightmost chunk
+// also labeled "3".
+//
+// In order to handle this case, this function always treats the *leftmost*
+// (i.e. earliest) chunk with the given ID that has *any* overlap with the
+// current window as the current shard. It returns the boundaries of this chunk
+// as the boundaries of the desired shard. In the diagram below, even though
+// there is another chunk with ID "1" near the right-hand edge of the window,
+// that chunk is ignored.
+//
+//    shard:           |  1  |  2  |  3  |  4  |  5  |  0  |
+// ...-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----...
+//                          ^  ^-atTime                         ^
+//    atTime-lookbackPeriod-┘          atTime+lookforwardPeriod-┘
+//
+// This means that the lookforwardPeriod MUST be configured large enough that
+// there is a buffer of at least one whole chunk width between the actual
+// furthest-future expiration (generally atTime+90d) and the right-hand edge of
+// the window (atTime+lookforwardPeriod).
 func (cu *crlUpdater) getWindowForShard(atTime time.Time, shardID int64) (time.Time, time.Time) {
+	// Ensure that the given shardID falls within the space of acceptable IDs.
 	shardID = shardID % cu.numShards
-	shardWidth := cu.lookbackPeriod.Nanoseconds() / cu.numShards
-	offset := (atTime.UnixNano() - (shardID * shardWidth)) % cu.lookbackPeriod.Nanoseconds()
-	start := atTime.Add(-time.Duration(offset))
-	end := start.Add(time.Duration(shardWidth))
-	if end.After(atTime) {
-		end = end.Add(-cu.lookbackPeriod)
+
+	// Compute the width of the full window.
+	windowWidth := cu.lookbackPeriod + cu.lookforwardPeriod
+	// Compute the amount of time between the left-hand edge of the most recent
+	// "0" chunk and the current time.
+	atTimeOffset := time.Duration(atTime.Sub(time.Time{}).Nanoseconds() % windowWidth.Nanoseconds())
+	// Compute the left-hand edge of the most recent "0" chunk.
+	zeroStart := atTime.Add(-atTimeOffset)
+
+	// Compute the width of a single shard.
+	shardWidth := time.Duration(windowWidth.Nanoseconds() / cu.numShards)
+	// Compute the amount of time between the left-hand edge of the most recent
+	// "0" chunk and the left-hand edge of the desired chunk.
+	shardOffset := time.Duration(shardID * shardWidth.Nanoseconds())
+	// Compute the left-hand edge of the most recent chunk with the given ID.
+	shardStart := zeroStart.Add(shardOffset)
+	// Compute the right-hand edge of the most recent chunk with the given ID.
+	shardEnd := shardStart.Add(shardWidth)
+
+	// But the shard boundaries we just computed might be for a chunk that is
+	// completely behind the left-hand edge of our current window. If they are,
+	// bump them forward by one window width to bring them inside our window.
+	if shardEnd.Before(atTime.Add(-cu.lookbackPeriod)) {
+		shardStart = shardStart.Add(windowWidth)
+		shardEnd = shardEnd.Add(windowWidth)
 	}
-	return start, end
+	return shardStart, shardEnd
 }
 
 func (cu *crlUpdater) tickIssuer(ctx context.Context, atTime time.Time, id issuance.IssuerNameID) error {
@@ -156,12 +213,12 @@ func (cu *crlUpdater) tickIssuer(ctx context.Context, atTime time.Time, id issua
 	for shardID := int64(0); shardID < cu.numShards; shardID++ {
 		// For now, process each shard serially. This prevents us fromt trying to
 		// load multiple shards-worth of CRL entries simultaneously.
-		issuedAfter, issuedBefore := cu.getWindowForShard(atTime, shardID)
+		expiresAfter, expiresBefore := cu.getWindowForShard(atTime, shardID)
 
 		saStream, err := cu.sa.GetRevokedCerts(ctx, &sapb.GetRevokedCertsRequest{
 			IssuerNameID:  int64(id),
-			IssuedAfter:   issuedAfter.UnixNano(),
-			IssuedBefore:  issuedBefore.UnixNano(),
+			ExpiresAfter:  expiresAfter.UnixNano(),
+			ExpiresBefore: expiresBefore.UnixNano(),
 			RevokedBefore: atTime.UnixNano(),
 		})
 		if err != nil {
