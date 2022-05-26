@@ -123,7 +123,118 @@ func (cu *crlUpdater) tick(ctx context.Context) {
 			result = "failed"
 		}
 	}
+}
 
+// tickIssuer performs the full crl issuance cycle for a single issuer cert.
+func (cu *crlUpdater) tickIssuer(ctx context.Context, atTime time.Time, issuerID issuance.IssuerNameID) error {
+	start := cu.clk.Now()
+	result := "success"
+	defer func() {
+		cu.tickHistogram.WithLabelValues(cu.issuers[issuerID].Subject.CommonName+" (Overall)", result).Observe(cu.clk.Now().Sub(start).Seconds())
+	}()
+
+	for shardID := int64(0); shardID < cu.numShards; shardID++ {
+		// For now, process each shard serially. This prevents us fromt trying to
+		// load multiple shards-worth of CRL entries simultaneously.
+		err := cu.tickShard(ctx, atTime, issuerID, shardID)
+		if err != nil {
+			result = "failed"
+			return fmt.Errorf("error updating shard %d: %w", shardID, err)
+		}
+	}
+
+	return nil
+}
+
+func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID issuance.IssuerNameID, shardID int64) error {
+	start := cu.clk.Now()
+	result := "success"
+	defer func() {
+		cu.tickHistogram.WithLabelValues(cu.issuers[issuerID].Subject.CommonName, result).Observe(cu.clk.Now().Sub(start).Seconds())
+	}()
+
+	expiresAfter, expiresBefore := cu.getShardBoundaries(atTime, shardID)
+
+	saStream, err := cu.sa.GetRevokedCerts(ctx, &sapb.GetRevokedCertsRequest{
+		IssuerNameID:  int64(issuerID),
+		ExpiresAfter:  expiresAfter.UnixNano(),
+		ExpiresBefore: expiresBefore.UnixNano(),
+		RevokedBefore: atTime.UnixNano(),
+	})
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error connecting to SA for shard %d: %w", shardID, err)
+	}
+
+	caStream, err := cu.ca.GenerateCRL(ctx)
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error connecting to CA for shard %d: %w", shardID, err)
+	}
+
+	err = caStream.Send(&capb.GenerateCRLRequest{
+		Payload: &capb.GenerateCRLRequest_Metadata{
+			Metadata: &capb.CRLMetadata{
+				IssuerNameID: int64(issuerID),
+				ThisUpdate:   atTime.UnixNano(),
+			},
+		},
+	})
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error sending CA metadata for shard %d: %w", shardID, err)
+	}
+
+	for {
+		entry, err := saStream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			result = "failed"
+			return fmt.Errorf("error retrieving entry from SA for shard %d: %w", shardID, err)
+		}
+
+		err = caStream.Send(&capb.GenerateCRLRequest{
+			Payload: &capb.GenerateCRLRequest_Entry{
+				Entry: entry,
+			},
+		})
+		if err != nil {
+			result = "failed"
+			return fmt.Errorf("error sending entry to CA for shard %d: %w", shardID, err)
+		}
+	}
+
+	crlBytes := make([]byte, 0)
+	for {
+		out, err := caStream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			result = "failed"
+			return fmt.Errorf("failed to read CRL bytes for shard %d: %w", shardID, err)
+		}
+
+		crlBytes = append(crlBytes, out.Chunk...)
+	}
+
+	crl, err := x509.ParseDERCRL(crlBytes)
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("failed to parse CRL bytes for shard %d: %w", shardID, err)
+	}
+
+	err = cu.issuers[issuerID].CheckCRLSignature(crl)
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("failed to validate signature for shard %d: %w", shardID, err)
+	}
+
+	// TODO: Upload the CRL to flat-file storage somewhere.
+	cu.log.Debugf("got complete CRL for issuer %s, shard %d with %d entries", cu.issuers[issuerID].Subject.CommonName, shardID, len(crl.TBSCertList.RevokedCertificates))
+	return nil
 }
 
 // getShardBoundaries computes the start (inclusive) and end (exclusive) times
@@ -201,100 +312,4 @@ func (cu *crlUpdater) getShardBoundaries(atTime time.Time, shardID int64) (time.
 		shardEnd = shardEnd.Add(windowWidth)
 	}
 	return shardStart, shardEnd
-}
-
-func (cu *crlUpdater) tickIssuer(ctx context.Context, atTime time.Time, id issuance.IssuerNameID) error {
-	start := cu.clk.Now()
-	result := "success"
-	defer func() {
-		cu.tickHistogram.WithLabelValues(cu.issuers[id].Subject.CommonName, result).Observe(cu.clk.Now().Sub(start).Seconds())
-	}()
-
-	for shardID := int64(0); shardID < cu.numShards; shardID++ {
-		// For now, process each shard serially. This prevents us fromt trying to
-		// load multiple shards-worth of CRL entries simultaneously.
-		expiresAfter, expiresBefore := cu.getShardBoundaries(atTime, shardID)
-
-		saStream, err := cu.sa.GetRevokedCerts(ctx, &sapb.GetRevokedCertsRequest{
-			IssuerNameID:  int64(id),
-			ExpiresAfter:  expiresAfter.UnixNano(),
-			ExpiresBefore: expiresBefore.UnixNano(),
-			RevokedBefore: atTime.UnixNano(),
-		})
-		if err != nil {
-			result = "failed"
-			return fmt.Errorf("error connecting to SA for shard %d: %s", shardID, err)
-		}
-
-		caStream, err := cu.ca.GenerateCRL(ctx)
-		if err != nil {
-			result = "failed"
-			return fmt.Errorf("error connecting to CA for shard %d: %s", shardID, err)
-		}
-
-		err = caStream.Send(&capb.GenerateCRLRequest{
-			Payload: &capb.GenerateCRLRequest_Metadata{
-				Metadata: &capb.CRLMetadata{
-					IssuerNameID: int64(id),
-					ThisUpdate:   atTime.UnixNano(),
-				},
-			},
-		})
-		if err != nil {
-			result = "failed"
-			return fmt.Errorf("error sending CA metadata for shard %d: %s", shardID, err)
-		}
-
-		for {
-			entry, err := saStream.Recv()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				result = "failed"
-				return fmt.Errorf("error retrieving entry from SA for shard %d: %s", shardID, err)
-			}
-
-			err = caStream.Send(&capb.GenerateCRLRequest{
-				Payload: &capb.GenerateCRLRequest_Entry{
-					Entry: entry,
-				},
-			})
-			if err != nil {
-				result = "failed"
-				return fmt.Errorf("error sending entry to CA for shard %d: %s", shardID, err)
-			}
-		}
-
-		crlBytes := make([]byte, 0)
-		for {
-			out, err := caStream.Recv()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				result = "failed"
-				return fmt.Errorf("failed to read CRL bytes for shard %d: %s", shardID, err)
-			}
-
-			crlBytes = append(crlBytes, out.Chunk...)
-		}
-
-		crl, err := x509.ParseDERCRL(crlBytes)
-		if err != nil {
-			result = "failed"
-			return fmt.Errorf("failed to parse CRL bytes for shard %d: %s", shardID, err)
-		}
-
-		err = cu.issuers[id].CheckCRLSignature(crl)
-		if err != nil {
-			result = "failed"
-			return fmt.Errorf("failed to validate signature for shard %d: %s", shardID, err)
-		}
-
-		// TODO: Upload the CRL to flat-file storage somewhere.
-		cu.log.Debugf("got complete CRL for issuer %s, shard %d with %d entries", cu.issuers[id].Subject.CommonName, shardID, len(crl.TBSCertList.RevokedCertificates))
-	}
-
-	return nil
 }
