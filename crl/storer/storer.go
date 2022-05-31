@@ -56,6 +56,8 @@ func (cs *crlStorer) UploadCRL(stream cspb.CRLStorer_UploadCRLServer) error {
 			crlBytes = append(crlBytes, payload.CrlChunk...)
 		}
 
+		// Open question: should it be the responsibility of the Storer to do this
+		// validation, or should the Updater do it?
 		crl, err := x509.ParseDERCRL(crlBytes)
 		if err != nil {
 			return fmt.Errorf("failed to parse CRL bytes for shard %d: %w", shardID, err)

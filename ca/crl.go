@@ -132,6 +132,9 @@ func (ci *crlImpl) GenerateCRL(stream capb.CRLGenerator_GenerateCRLServer) error
 		return err
 	}
 
+	// Open question: should the CA parse and validate its own CRL here, before
+	// streaming the bytes back to the updater?
+
 	for i := 0; i < len(crlBytes); i += 1000 {
 		j := i + 1000
 		if j > len(crlBytes) {

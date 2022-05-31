@@ -229,6 +229,9 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 		return fmt.Errorf("error sending CRLStorer metadata for shard %d: %w", shardID, err)
 	}
 
+	// Open question: this currently streams bytes directly from the CA to the
+	// Storer. Should it instead consume bytes from the CA, parse and validate
+	// the CRL here and now, and *then* forward the bytes to the Storer?
 	for {
 		out, err := caStream.Recv()
 		if err != nil {
