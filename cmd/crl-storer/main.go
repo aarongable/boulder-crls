@@ -1,9 +1,15 @@
 package notmain
 
 import (
+	"context"
 	"flag"
+	"net/http"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	awsl "github.com/aws/smithy-go/logging"
 	"github.com/honeycombio/beeline-go"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -14,6 +20,7 @@ import (
 	"github.com/letsencrypt/boulder/features"
 	bgrpc "github.com/letsencrypt/boulder/grpc"
 	"github.com/letsencrypt/boulder/issuance"
+	blog "github.com/letsencrypt/boulder/log"
 )
 
 type Config struct {
@@ -25,11 +32,50 @@ type Config struct {
 		// them.
 		IssuerCerts []string
 
+		// S3Region is the AWS Region (e.g. us-west-1) that uploads should go to.
+		S3Region string
+		// S3Bucket is the AWS Bucket that uploads should go to. Must be created
+		// (and have appropriate permissions set) beforehand.
+		S3Bucket string
+		// S3AccessKeyID is the AWS access key ID (aka username). See
+		// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws#Credentials.
+		S3AccessKeyID string
+		// S3SecretAccessKey is the secret key (aka password). See
+		// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws#Credentials.
+		S3SecretAccessKey string
+
 		Features map[string]bool
 	}
 
 	Syslog  cmd.SyslogConfig
 	Beeline cmd.BeelineConfig
+}
+
+// awsLogger implements the github.com/aws/smithy-go/logging.Logger interface.
+type awsLogger struct {
+	blog.Logger
+}
+
+func (log awsLogger) Logf(c awsl.Classification, format string, v ...interface{}) {
+	switch c {
+	case awsl.Debug:
+		log.Debugf(format, v...)
+	case awsl.Warn:
+		log.Warningf(format, v...)
+	}
+}
+
+// awsCreds implements the aws.CredentialsProvider interface.
+type awsCreds struct {
+	accessKeyId     string
+	secretAccessKey string
+}
+
+func (c awsCreds) Retrieve(_ context.Context) (aws.Credentials, error) {
+	return aws.Credentials{
+		AccessKeyID:     c.accessKeyId,
+		SecretAccessKey: c.secretAccessKey,
+	}, nil
 }
 
 func main() {
@@ -67,7 +113,20 @@ func main() {
 		issuers = append(issuers, cert)
 	}
 
-	csi, err := storer.New(issuers, nil, scope, logger, clk)
+	s3client := s3.New(s3.Options{
+		Region:     c.CRLStorer.S3Region,
+		HTTPClient: new(http.Client),
+		Credentials: credentials.StaticCredentialsProvider{
+			Value: aws.Credentials{
+				AccessKeyID:     c.CRLStorer.S3AccessKeyID,
+				SecretAccessKey: c.CRLStorer.S3SecretAccessKey,
+			},
+		},
+		Logger:        awsLogger{logger},
+		ClientLogMode: aws.LogRequestEventMessage | aws.LogResponseEventMessage,
+	})
+
+	csi, err := storer.New(issuers, s3client, scope, logger, clk)
 	cmd.FailOnError(err, "Failed to create OCSP impl")
 
 	serverMetrics := bgrpc.NewServerMetrics(scope)

@@ -18,7 +18,11 @@
       "/hierarchy/intermediate-cert-rsa-a.pem",
       "/hierarchy/intermediate-cert-rsa-b.pem",
       "/hierarchy/intermediate-cert-ecdsa-a.pem"
-    ]
+    ],
+    "s3Region": "us-west-1",
+    "s3Bucket": "lets-encrypt-crls",
+    "s3AccesKeyID": "some-key-id",
+    "s3SecretAccessKey": "its-a-secret"
   },
 
   "syslog": {

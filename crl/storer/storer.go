@@ -1,22 +1,31 @@
 package storer
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jmhodges/clock"
+	"github.com/prometheus/client_golang/prometheus"
+
 	cspb "github.com/letsencrypt/boulder/crl/storer/proto"
 	"github.com/letsencrypt/boulder/issuance"
 	blog "github.com/letsencrypt/boulder/log"
-	"github.com/prometheus/client_golang/prometheus"
 )
+
+// s3Putter matches the subset of the s3.Client interface which we use, to allow
+// simpler mocking in tests.
+type s3Putter interface {
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+}
 
 type crlStorer struct {
 	cspb.UnimplementedCRLStorerServer
-	awsClient        interface{}
+	awsClient        s3Putter
 	issuers          map[issuance.IssuerNameID]*issuance.Certificate
 	sizeHistogram    *prometheus.HistogramVec
 	latencyHistogram *prometheus.HistogramVec
@@ -26,7 +35,7 @@ type crlStorer struct {
 
 func New(
 	issuers []*issuance.Certificate,
-	awsClient interface{},
+	s3client s3Putter,
 	stats prometheus.Registerer,
 	log blog.Logger,
 	clk clock.Clock,
@@ -52,7 +61,7 @@ func New(
 
 	return &crlStorer{
 		issuers:          issuersByNameID,
-		awsClient:        awsClient,
+		awsClient:        s3client,
 		sizeHistogram:    sizeHistogram,
 		latencyHistogram: latencyHistogram,
 		log:              log,
