@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	awsl "github.com/aws/smithy-go/logging"
 	"github.com/honeycombio/beeline-go"
@@ -37,12 +37,10 @@ type Config struct {
 		// S3Bucket is the AWS Bucket that uploads should go to. Must be created
 		// (and have appropriate permissions set) beforehand.
 		S3Bucket string
-		// S3AccessKeyID is the AWS access key ID (aka username). See
-		// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws#Credentials.
-		S3AccessKeyID string
-		// S3SecretAccessKey is the secret key (aka password). See
-		// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws#Credentials.
-		S3SecretAccessKey string
+		// // S3CredsFile is the path to a file containing AWS S3 credentials (an
+		// // access key ID and a secret access key) in the standard toml format:
+		// // https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
+		// S3CredsFile string
 
 		Features map[string]bool
 	}
@@ -63,19 +61,6 @@ func (log awsLogger) Logf(c awsl.Classification, format string, v ...interface{}
 	case awsl.Warn:
 		log.Warningf(format, v...)
 	}
-}
-
-// awsCreds implements the aws.CredentialsProvider interface.
-type awsCreds struct {
-	accessKeyId     string
-	secretAccessKey string
-}
-
-func (c awsCreds) Retrieve(_ context.Context) (aws.Credentials, error) {
-	return aws.Credentials{
-		AccessKeyID:     c.accessKeyId,
-		SecretAccessKey: c.secretAccessKey,
-	}, nil
 }
 
 func main() {
@@ -113,21 +98,22 @@ func main() {
 		issuers = append(issuers, cert)
 	}
 
-	s3client := s3.New(s3.Options{
-		Region:     c.CRLStorer.S3Region,
-		HTTPClient: new(http.Client),
-		Credentials: credentials.StaticCredentialsProvider{
-			Value: aws.Credentials{
-				AccessKeyID:     c.CRLStorer.S3AccessKeyID,
-				SecretAccessKey: c.CRLStorer.S3SecretAccessKey,
-			},
-		},
-		Logger:        awsLogger{logger},
-		ClientLogMode: aws.LogRequestEventMessage | aws.LogResponseEventMessage,
-	})
+	optFns := []func(*config.LoadOptions) error{
+		config.WithRegion(c.CRLStorer.S3Region),
+		config.WithHTTPClient(new(http.Client)),
+		config.WithLogger(awsLogger{logger}),
+		config.WithClientLogMode(aws.LogRequestEventMessage | aws.LogResponseEventMessage),
+	}
+	// if c.CRLStorer.S3CredsFile != "" {
+	// 	optFns = append(optFns, config.WithSharedCredentialsFiles([]string{c.CRLStorer.S3CredsFile}))
+	// }
+	awsConfig, err := config.LoadDefaultConfig(context.Background(), optFns...)
+	cmd.FailOnError(err, "Failed to load AWS config")
+
+	s3client := s3.NewFromConfig(awsConfig)
 
 	csi, err := storer.New(issuers, s3client, scope, logger, clk)
-	cmd.FailOnError(err, "Failed to create OCSP impl")
+	cmd.FailOnError(err, "Failed to create CRLStorer impl")
 
 	serverMetrics := bgrpc.NewServerMetrics(scope)
 	grpcSrv, listener, err := bgrpc.NewServer(c.CRLStorer.GRPC, tlsConfig, serverMetrics, clk)
