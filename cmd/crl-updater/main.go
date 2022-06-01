@@ -133,3 +133,7 @@ func main() {
 	go cmd.CatchSignals(logger, nil)
 	u.Run()
 }
+
+func init() {
+	cmd.RegisterCommand("crl-updater", main)
+}

@@ -14,6 +14,10 @@
       "serverAddress": "sa.boulder:9095",
       "timeout": "15s"
     },
+    "crlStorerService": {
+      "serverAddress": "crl-storer.boulder:9109",
+      "timeout": "15s"
+    },
     "issuerCerts": [
       "/hierarchy/intermediate-cert-rsa-a.pem",
       "/hierarchy/intermediate-cert-rsa-b.pem",
@@ -21,6 +25,7 @@
     ],
     "numShards": 10,
     "lookbackPeriod": "240h",
+    "lookforwardPeriod": "2400h",
     "updatePeriod": "6h"
   },
 
