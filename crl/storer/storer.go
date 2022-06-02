@@ -82,7 +82,6 @@ func (cs *crlStorer) UploadCRL(stream cspb.CRLStorer_UploadCRLServer) error {
 	var crlNumber *big.Int
 	crlBytes := make([]byte, 0)
 
-	cs.log.Debugf("Got request from crl-updater")
 	for {
 		in, err := stream.Recv()
 		if err != nil {
