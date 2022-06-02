@@ -2,11 +2,11 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"net/http"
 
 	"github.com/letsencrypt/boulder/cmd"
-	blog "github.com/letsencrypt/boulder/log"
 )
 
 func main() {
@@ -14,8 +14,15 @@ func main() {
 	flag.Parse()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		logger := blog.Get()
-		logger.Warningf("s3-test-srv: got request: %v\n", r)
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte("failed to read request body"))
+			return
+		}
+
+		w.WriteHeader(200)
+		w.Write([]byte("{}"))
 	})
 
 	go log.Fatal(http.ListenAndServe(*listenAddr, nil))

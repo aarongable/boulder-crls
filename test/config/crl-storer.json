@@ -19,13 +19,13 @@
       "/hierarchy/intermediate-cert-rsa-b.pem",
       "/hierarchy/intermediate-cert-ecdsa-a.pem"
     ],
-    "s3Endpoint": "localhost:7890",
+    "s3Endpoint": "http://localhost:7890",
     "s3Region": "us-west-1",
     "s3Bucket": "lets-encrypt-crls"
   },
 
   "syslog": {
-    "stdoutlevel": 7,
+    "stdoutlevel": 6,
     "sysloglevel": 6
   },
   "beeline": {

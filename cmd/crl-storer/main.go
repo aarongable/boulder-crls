@@ -99,31 +99,24 @@ func main() {
 		issuers = append(issuers, cert)
 	}
 
-	optFns := []func(*config.LoadOptions) error{
+	awsConfig, err := config.LoadDefaultConfig(
+		context.Background(),
 		config.WithRegion(c.CRLStorer.S3Region),
 		config.WithHTTPClient(new(http.Client)),
 		config.WithLogger(awsLogger{logger}),
-		config.WithClientLogMode(aws.LogRequestEventMessage | aws.LogResponseEventMessage),
-	}
-	if c.CRLStorer.S3Endpoint != "" {
-		optFns = append(optFns, config.WithEndpointResolverWithOptions(
-			aws.EndpointResolverWithOptionsFunc(
-				func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-					return aws.Endpoint{
-						URL:               c.CRLStorer.S3Endpoint,
-						PartitionID:       "aws",
-						SigningRegion:     region,
-						HostnameImmutable: true,
-						Source:            aws.EndpointSourceCustom,
-					}, nil
-				},
-			),
-		))
-	}
-	awsConfig, err := config.LoadDefaultConfig(context.Background(), optFns...)
+		config.WithClientLogMode(aws.LogRequestEventMessage|aws.LogResponseEventMessage),
+	)
 	cmd.FailOnError(err, "Failed to load AWS config")
 
-	s3client := s3.NewFromConfig(awsConfig)
+	s3opts := make([]func(*s3.Options), 0)
+	if c.CRLStorer.S3Endpoint != "" {
+		s3opts = append(
+			s3opts,
+			s3.WithEndpointResolver(s3.EndpointResolverFromURL(c.CRLStorer.S3Endpoint)),
+			func(o *s3.Options) { o.UsePathStyle = true },
+		)
+	}
+	s3client := s3.NewFromConfig(awsConfig, s3opts...)
 
 	csi, err := storer.New(issuers, s3client, c.CRLStorer.S3Bucket, scope, logger, clk)
 	cmd.FailOnError(err, "Failed to create CRLStorer impl")

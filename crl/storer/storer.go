@@ -137,7 +137,7 @@ func (cs *crlStorer) UploadCRL(stream cspb.CRLStorer_UploadCRLServer) error {
 	checksum := sha256.Sum256(crlBytes)
 	checksumb64 := base64.StdEncoding.EncodeToString(checksum[:])
 	crlContentType := "application/pkix-crl"
-	_, err = cs.s3Client.PutObject(stream.Context(), &s3.PutObjectInput{
+	res, err := cs.s3Client.PutObject(stream.Context(), &s3.PutObjectInput{
 		Bucket:            &cs.s3Bucket,
 		Key:               &filename,
 		Body:              bytes.NewReader(crlBytes),
@@ -146,12 +146,14 @@ func (cs *crlStorer) UploadCRL(stream cspb.CRLStorer_UploadCRLServer) error {
 		ContentType:       &crlContentType,
 		Metadata:          map[string]string{"crlNumber": crlNumber.String()},
 	})
+	if err != nil {
+		cs.log.AuditErrf("failed to upload CRL: %s", err.Error())
+	} else {
+		cs.log.Debugf("uploaded CRL, got resp: %#v", res)
+	}
 
 	latency := cs.clk.Now().Sub(start)
 	cs.latencyHistogram.WithLabelValues(issuer.Subject.CommonName).Observe(latency.Seconds())
 
-	if err != nil {
-		return fmt.Errorf("failed to upload CRL: %w", err)
-	}
-	return nil
+	return err
 }
