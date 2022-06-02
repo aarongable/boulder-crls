@@ -1,14 +1,18 @@
 package storer
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/jmhodges/clock"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -25,7 +29,8 @@ type s3Putter interface {
 
 type crlStorer struct {
 	cspb.UnimplementedCRLStorerServer
-	awsClient        s3Putter
+	s3Client         s3Putter
+	s3Bucket         string
 	issuers          map[issuance.IssuerNameID]*issuance.Certificate
 	sizeHistogram    *prometheus.HistogramVec
 	latencyHistogram *prometheus.HistogramVec
@@ -35,7 +40,8 @@ type crlStorer struct {
 
 func New(
 	issuers []*issuance.Certificate,
-	s3client s3Putter,
+	s3Client s3Putter,
+	s3Bucket string,
 	stats prometheus.Registerer,
 	log blog.Logger,
 	clk clock.Clock,
@@ -61,7 +67,8 @@ func New(
 
 	return &crlStorer{
 		issuers:          issuersByNameID,
-		awsClient:        s3client,
+		s3Client:         s3Client,
+		s3Bucket:         s3Bucket,
 		sizeHistogram:    sizeHistogram,
 		latencyHistogram: latencyHistogram,
 		log:              log,
@@ -75,6 +82,7 @@ func (cs *crlStorer) UploadCRL(stream cspb.CRLStorer_UploadCRLServer) error {
 	var crlNumber *big.Int
 	crlBytes := make([]byte, 0)
 
+	cs.log.Debugf("Got request from crl-updater")
 	for {
 		in, err := stream.Recv()
 		if err != nil {
@@ -122,11 +130,29 @@ func (cs *crlStorer) UploadCRL(stream cspb.CRLStorer_UploadCRLServer) error {
 		return fmt.Errorf("failed to validate signature for shard %d: %w", shardID, err)
 	}
 
-	// TODO: Actually send the bytes elsewhere.
-	start := cs.clk.Now()
 	cs.log.Debugf("got complete CRL for issuer %s, shard %d with %d entries", issuer.Subject.CommonName, shardID, len(crl.TBSCertList.RevokedCertificates))
+
+	start := cs.clk.Now()
+
+	filename := fmt.Sprintf("%s/%d.crl", issuer.Subject.CommonName, shardID)
+	checksum := sha256.Sum256(crlBytes)
+	checksumb64 := base64.StdEncoding.EncodeToString(checksum[:])
+	crlContentType := "application/pkix-crl"
+	_, err = cs.s3Client.PutObject(stream.Context(), &s3.PutObjectInput{
+		Bucket:            &cs.s3Bucket,
+		Key:               &filename,
+		Body:              bytes.NewReader(crlBytes),
+		ChecksumAlgorithm: types.ChecksumAlgorithmSha256,
+		ChecksumSHA256:    &checksumb64,
+		ContentType:       &crlContentType,
+		Metadata:          map[string]string{"crlNumber": crlNumber.String()},
+	})
+
 	latency := cs.clk.Now().Sub(start)
 	cs.latencyHistogram.WithLabelValues(issuer.Subject.CommonName).Observe(latency.Seconds())
 
+	if err != nil {
+		return fmt.Errorf("failed to upload CRL: %w", err)
+	}
 	return nil
 }

@@ -97,11 +97,13 @@ func NewUpdater(
 	}, nil
 }
 
+// Run causes the crl-updater to run immediately, and then re-run continuously
+// on the frequency specified by crlUpdater.updatePeriod.
 func (cu *crlUpdater) Run() {
+	cu.tick(context.Background())
 	ticker := time.Tick(cu.updatePeriod)
 	for range ticker {
-		ctx := context.Background()
-		cu.tick(ctx)
+		cu.tick(context.Background())
 	}
 }
 
@@ -116,6 +118,7 @@ func (cu *crlUpdater) tick(ctx context.Context) {
 		// For now, process each issuer serially. This prevents us from trying to
 		// load multiple issuers-worth of CRL entries simultaneously.
 		atTime := cu.clk.Now()
+		cu.log.Debugf("Updating CRLs for %q at time %s", iss.Subject.CommonName, atTime)
 		err := cu.tickIssuer(ctx, atTime, id)
 		if err != nil {
 			cu.log.AuditErrf(
@@ -137,6 +140,7 @@ func (cu *crlUpdater) tickIssuer(ctx context.Context, atTime time.Time, issuerID
 	}()
 
 	for shardID := int64(0); shardID < cu.numShards; shardID++ {
+		cu.log.Debugf("Updating shard %d", shardID)
 		// For now, process each shard serially. This prevents us fromt trying to
 		// load multiple shards-worth of CRL entries simultaneously.
 		err := cu.tickShard(ctx, atTime, issuerID, shardID)
@@ -158,6 +162,7 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 
 	expiresAfter, expiresBefore := cu.getShardBoundaries(atTime, shardID)
 
+	cu.log.Debugf("Connecting to SA")
 	saStream, err := cu.sa.GetRevokedCerts(ctx, &sapb.GetRevokedCertsRequest{
 		IssuerNameID:  int64(issuerID),
 		ExpiresAfter:  expiresAfter.UnixNano(),
@@ -169,6 +174,7 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 		return fmt.Errorf("error connecting to SA for shard %d: %w", shardID, err)
 	}
 
+	cu.log.Debugf("Connecting to CA")
 	caStream, err := cu.ca.GenerateCRL(ctx)
 	if err != nil {
 		result = "failed"
@@ -209,6 +215,13 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 		}
 	}
 
+	err = caStream.CloseSend()
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error closing CA request stream for shard %d: %w", shardID, err)
+	}
+
+	cu.log.Debugf("Connecting to CS")
 	csStream, err := cu.cs.UploadCRL(ctx)
 	if err != nil {
 		result = "failed"
@@ -251,6 +264,12 @@ func (cu *crlUpdater) tickShard(ctx context.Context, atTime time.Time, issuerID 
 			result = "failed"
 			return fmt.Errorf("error sending CRL bytes for shard %d: %w", shardID, err)
 		}
+	}
+
+	err = csStream.CloseSend()
+	if err != nil {
+		result = "failed"
+		return fmt.Errorf("error closing storage upload stream for shard %d: %w", shardID, err)
 	}
 
 	return nil

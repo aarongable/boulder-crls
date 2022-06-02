@@ -34,6 +34,10 @@ func NewCRLImpl(issuers []*issuance.Issuer, lifetime time.Duration, logger blog.
 		return nil, fmt.Errorf("crl lifetime cannot be more than 10 days, got: %s", lifetime)
 	}
 
+	if lifetime <= 0*time.Hour {
+		return nil, fmt.Errorf("crl lifetime must be positive, got: %s", lifetime)
+	}
+
 	return &crlImpl{
 		issuers:  issuersByNameID,
 		lifetime: lifetime,

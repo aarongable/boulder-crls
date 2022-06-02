@@ -128,7 +128,7 @@ func main() {
 		logger,
 		clk,
 	)
-	cmd.FailOnError(err, "Failed to create updater")
+	cmd.FailOnError(err, "Failed to create crl-updater")
 
 	go cmd.CatchSignals(logger, nil)
 	u.Run()

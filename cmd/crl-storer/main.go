@@ -32,15 +32,16 @@ type Config struct {
 		// them.
 		IssuerCerts []string
 
+		// S3Endpoint is the URL at which the S3-API-compatible object storage
+		// service can be reached. This can be used to point to a non-Amazon storage
+		// service, or to point to a fake service for testing. It should be left
+		// blank by default.
+		S3Endpoint string
 		// S3Region is the AWS Region (e.g. us-west-1) that uploads should go to.
 		S3Region string
 		// S3Bucket is the AWS Bucket that uploads should go to. Must be created
 		// (and have appropriate permissions set) beforehand.
 		S3Bucket string
-		// // S3CredsFile is the path to a file containing AWS S3 credentials (an
-		// // access key ID and a secret access key) in the standard toml format:
-		// // https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
-		// S3CredsFile string
 
 		Features map[string]bool
 	}
@@ -104,15 +105,27 @@ func main() {
 		config.WithLogger(awsLogger{logger}),
 		config.WithClientLogMode(aws.LogRequestEventMessage | aws.LogResponseEventMessage),
 	}
-	// if c.CRLStorer.S3CredsFile != "" {
-	// 	optFns = append(optFns, config.WithSharedCredentialsFiles([]string{c.CRLStorer.S3CredsFile}))
-	// }
+	if c.CRLStorer.S3Endpoint != "" {
+		optFns = append(optFns, config.WithEndpointResolverWithOptions(
+			aws.EndpointResolverWithOptionsFunc(
+				func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+					return aws.Endpoint{
+						URL:               c.CRLStorer.S3Endpoint,
+						PartitionID:       "aws",
+						SigningRegion:     region,
+						HostnameImmutable: true,
+						Source:            aws.EndpointSourceCustom,
+					}, nil
+				},
+			),
+		))
+	}
 	awsConfig, err := config.LoadDefaultConfig(context.Background(), optFns...)
 	cmd.FailOnError(err, "Failed to load AWS config")
 
 	s3client := s3.NewFromConfig(awsConfig)
 
-	csi, err := storer.New(issuers, s3client, scope, logger, clk)
+	csi, err := storer.New(issuers, s3client, c.CRLStorer.S3Bucket, scope, logger, clk)
 	cmd.FailOnError(err, "Failed to create CRLStorer impl")
 
 	serverMetrics := bgrpc.NewServerMetrics(scope)
