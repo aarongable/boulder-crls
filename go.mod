@@ -1,6 +1,6 @@
 module github.com/letsencrypt/boulder
 
-go 1.17
+go 1.18
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.16.4
@@ -22,10 +22,10 @@ require (
 	github.com/letsencrypt/pkcs11key/v4 v4.0.0
 	github.com/miekg/dns v1.1.48
 	github.com/miekg/pkcs11 v1.1.1
-	github.com/prometheus/client_golang v1.12.1
+	github.com/prometheus/client_golang v1.12.2
 	github.com/prometheus/client_model v0.2.0
 	github.com/titanous/rocacheck v0.0.0-20171023193734-afe73141d399
-	github.com/weppos/publicsuffix-go v0.15.1-0.20220329081811-9a40b608a236
+	github.com/weppos/publicsuffix-go v0.15.1-0.20220413065649-906f534b73a4
 	github.com/zmap/zcrypto v0.0.0-20210811211718-6f9bc4aff20f
 	github.com/zmap/zlint/v3 v3.3.1-0.20211019173530-cb17369b4628
 	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2
@@ -34,7 +34,7 @@ require (
 	google.golang.org/grpc v1.36.1
 	google.golang.org/protobuf v1.28.0
 	gopkg.in/square/go-jose.v2 v2.6.0
-	gopkg.in/yaml.v2 v2.4.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

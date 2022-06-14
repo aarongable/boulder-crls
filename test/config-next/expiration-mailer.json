@@ -11,8 +11,9 @@
     },
     "certLimit": 100000,
     "nagTimes": ["480h", "240h"],
-    "emailTemplate": "test/example-expiration-template",
+    "emailTemplate": "test/config-next/expiration-mailer.gotmpl",
     "debugAddr": ":8008",
+    "parallelSends": 10,
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
       "certFile": "test/grpc-creds/expiration-mailer.boulder/cert.pem",
@@ -23,7 +24,10 @@
       "timeout": "15s"
     },
     "SMTPTrustedRootFile": "test/mail-test-srv/minica.pem",
-    "frequency": "1h"
+    "frequency": "1h",
+    "features": {
+      "ExpirationMailerDontLookTwice": true
+    }
   },
 
   "syslog": {

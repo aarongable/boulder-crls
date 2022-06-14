@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/letsencrypt/boulder/db"
 	berrors "github.com/letsencrypt/boulder/errors"
 	blog "github.com/letsencrypt/boulder/log"
+	bmail "github.com/letsencrypt/boulder/mail"
 	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/mocks"
 	"github.com/letsencrypt/boulder/sa"
@@ -83,10 +85,49 @@ var (
   "n":"rFH5kUBZrlPj73epjJjyCxzVzZuV--JjKgapoqm9pOuOt20BUTdHqVfC2oDclqM7HFhkkX9OSJMTHgZ7WaVqZv9u1X2yjdx9oVmMLuspX7EytW_ZKDZSzL-sCOFCuQAuYKkLbsdcA3eHBK_lwc4zwdeHFMKIulNvLqckkqYB9s8GpgNXBDIQ8GjR5HuJke_WUNjYHSd8jY1LU9swKWsLQe2YoQUz_ekQvBvBCoaFEtrtRaSJKNLIVDObXFr2TLIiFiM0Em90kK01-eQ7ZiruZTKomll64bRFPoNo4_uwubddg3xTqur2vdF3NyhTrYdvAgTem4uC0PFjEQ1bK_djBQ",
   "e":"AQAB"
 }`)
-	log      = blog.UseMock()
 	tmpl     = template.Must(template.New("expiry-email").Parse(testTmpl))
 	subjTmpl = template.Must(template.New("expiry-email-subject").Parse("Testing: " + defaultExpirationSubject))
 )
+
+func TestSendNagsManyCerts(t *testing.T) {
+	mc := mocks.Mailer{}
+	rs := newFakeRegStore()
+	fc := newFakeClock(t)
+
+	staticTmpl := template.Must(template.New("expiry-email-subject-static").Parse(testEmailSubject))
+	tmpl := template.Must(template.New("expiry-email").Parse(
+		`cert for DNS names {{.TruncatedDNSNames}} is going to expire in {{.DaysToExpiration}} days ({{.ExpirationDate}})`))
+
+	m := mailer{
+		log:           blog.NewMock(),
+		mailer:        &mc,
+		emailTemplate: tmpl,
+		// Explicitly override the default subject to use testEmailSubject
+		subjectTemplate: staticTmpl,
+		rs:              rs,
+		clk:             fc,
+		stats:           initStats(metrics.NoopRegisterer),
+	}
+
+	var certs []*x509.Certificate
+	for i := 0; i < 101; i++ {
+		certs = append(certs, &x509.Certificate{
+			SerialNumber: big.NewInt(0x0304),
+			NotAfter:     fc.Now().AddDate(0, 0, 2),
+			DNSNames:     []string{fmt.Sprintf("example-%d.com", i)},
+		})
+	}
+
+	conn, err := m.mailer.Connect()
+	test.AssertNotError(t, err, "connecting SMTP")
+	err = m.sendNags(conn, []string{emailA}, certs)
+	test.AssertNotError(t, err, "sending mail")
+
+	test.AssertEquals(t, len(mc.Messages), 1)
+	if len(strings.Split(mc.Messages[0].Body, "\n")) > 100 {
+		t.Errorf("Expected mailed message to truncate after 100 domains, got: %q", mc.Messages[0].Body)
+	}
+}
 
 func TestSendNags(t *testing.T) {
 	mc := mocks.Mailer{}
@@ -95,6 +136,7 @@ func TestSendNags(t *testing.T) {
 
 	staticTmpl := template.Must(template.New("expiry-email-subject-static").Parse(testEmailSubject))
 
+	log := blog.NewMock()
 	m := mailer{
 		log:           log,
 		mailer:        &mc,
@@ -112,7 +154,9 @@ func TestSendNags(t *testing.T) {
 		DNSNames:     []string{"example.com"},
 	}
 
-	err := m.sendNags([]string{emailA}, []*x509.Certificate{cert})
+	conn, err := m.mailer.Connect()
+	test.AssertNotError(t, err, "connecting SMTP")
+	err = m.sendNags(conn, []string{emailA}, []*x509.Certificate{cert})
 	test.AssertNotError(t, err, "Failed to send warning messages")
 	test.AssertEquals(t, len(mc.Messages), 1)
 	test.AssertEquals(t, mocks.MailerMessage{
@@ -122,7 +166,9 @@ func TestSendNags(t *testing.T) {
 	}, mc.Messages[0])
 
 	mc.Clear()
-	err = m.sendNags([]string{emailA, emailB}, []*x509.Certificate{cert})
+	conn, err = m.mailer.Connect()
+	test.AssertNotError(t, err, "connecting SMTP")
+	err = m.sendNags(conn, []string{emailA, emailB}, []*x509.Certificate{cert})
 	test.AssertNotError(t, err, "Failed to send warning messages")
 	test.AssertEquals(t, len(mc.Messages), 2)
 	test.AssertEquals(t, mocks.MailerMessage{
@@ -137,7 +183,9 @@ func TestSendNags(t *testing.T) {
 	}, mc.Messages[1])
 
 	mc.Clear()
-	err = m.sendNags([]string{}, []*x509.Certificate{cert})
+	conn, err = m.mailer.Connect()
+	test.AssertNotError(t, err, "connecting SMTP")
+	err = m.sendNags(conn, []string{}, []*x509.Certificate{cert})
 	test.AssertNotError(t, err, "Not an error to pass no email contacts")
 	test.AssertEquals(t, len(mc.Messages), 0)
 
@@ -148,13 +196,13 @@ func TestSendNags(t *testing.T) {
 	if !strings.Contains(sendLogs[0], `"Rcpt":["rolandshoemaker@gmail.com"]`) {
 		t.Errorf("expected first 'attempting send' log line to have one address, got %q", sendLogs[0])
 	}
-	if !strings.Contains(sendLogs[0], `"Serials":["000000000000000000000000000000000304"]`) {
+	if !strings.Contains(sendLogs[0], `"TruncatedSerials":["000000000000000000000000000000000304"]`) {
 		t.Errorf("expected first 'attempting send' log line to have one serial, got %q", sendLogs[0])
 	}
 	if !strings.Contains(sendLogs[0], `"DaysToExpiration":2`) {
 		t.Errorf("expected first 'attempting send' log line to have 2 days to expiration, got %q", sendLogs[0])
 	}
-	if !strings.Contains(sendLogs[0], `"DNSNames":["example.com"]`) {
+	if !strings.Contains(sendLogs[0], `"TruncatedDNSNames":["example.com"]`) {
 		t.Errorf("expected first 'attempting send' log line to have 1 domain, 'example.com', got %q", sendLogs[0])
 	}
 }
@@ -185,15 +233,132 @@ func TestProcessCerts(t *testing.T) {
 	testCtx := setup(t, []time.Duration{time.Hour * 24 * 7})
 
 	certs := addExpiringCerts(t, testCtx)
-	log.Clear()
 	testCtx.m.processCerts(context.Background(), certs)
 	// Test that the lastExpirationNagSent was updated for the certificate
 	// corresponding to serial4, which is set up as "already renewed" by
 	// addExpiringCerts.
-	if len(log.GetAllMatching("DEBUG: SQL:  UPDATE certificateStatus .*2006-01-02 15:04:05.999999999.*\"000000000000000000000000000000001339\"")) != 1 {
+	if len(testCtx.log.GetAllMatching("DEBUG: SQL:  UPDATE certificateStatus .*2006-01-02 15:04:05.999999999.*\"000000000000000000000000000000001339\"")) != 1 {
 		t.Errorf("Expected an update to certificateStatus, got these log lines:\n%s",
-			strings.Join(log.GetAllMatching(".*"), "\n"))
+			strings.Join(testCtx.log.GetAllMatching(".*"), "\n"))
 	}
+}
+
+// There's an account with an expiring certificate but no email address. We shouldn't examine
+// that certificate repeatedly; we should mark it as if it had an email sent already.
+func TestNoContactCertIsNotRenewed(t *testing.T) {
+	testCtx := setup(t, []time.Duration{time.Hour * 24 * 7})
+
+	reg, err := makeRegistration(testCtx.ssa, 1, jsonKeyA, nil)
+	test.AssertNotError(t, err, "Couldn't store regA")
+
+	cert, err := makeCertificate(
+		reg.Id,
+		serial1,
+		[]string{"example-a.com"},
+		23*time.Hour,
+		testCtx.fc)
+	test.AssertNotError(t, err, "creating cert A")
+
+	err = insertCertificate(cert, time.Time{})
+	test.AssertNotError(t, err, "inserting certificate")
+
+	err = testCtx.m.findExpiringCertificates(context.Background())
+	test.AssertNotError(t, err, "finding expired certificates")
+
+	// We should have sent no mail, because there was no contact address
+	test.AssertEquals(t, len(testCtx.mc.Messages), 0)
+
+	// We should have examined exactly one certificate
+	certsExamined := testCtx.m.stats.certificatesExamined
+	test.AssertMetricWithLabelsEquals(t, certsExamined, prometheus.Labels{}, 1.0)
+
+	certsAlreadyRenewed := testCtx.m.stats.certificatesAlreadyRenewed
+	test.AssertMetricWithLabelsEquals(t, certsAlreadyRenewed, prometheus.Labels{}, 0.0)
+
+	// Run findExpiringCertificates again. The count of examined certificates
+	// should not increase again.
+	err = testCtx.m.findExpiringCertificates(context.Background())
+	test.AssertNotError(t, err, "finding expired certificates")
+	test.AssertMetricWithLabelsEquals(t, certsExamined, prometheus.Labels{}, 1.0)
+	test.AssertMetricWithLabelsEquals(t, certsAlreadyRenewed, prometheus.Labels{}, 0.0)
+}
+
+// An account with no contact info has a certificate that is expiring but has been renewed.
+// We should only examine that certificate once.
+func TestNoContactCertIsRenewed(t *testing.T) {
+	testCtx := setup(t, []time.Duration{time.Hour * 24 * 7})
+
+	reg, err := makeRegistration(testCtx.ssa, 1, jsonKeyA, []string{})
+	test.AssertNotError(t, err, "Couldn't store regA")
+
+	names := []string{"example-a.com"}
+	cert, err := makeCertificate(
+		reg.Id,
+		serial1,
+		names,
+		23*time.Hour,
+		testCtx.fc)
+	test.AssertNotError(t, err, "creating cert A")
+
+	err = insertCertificate(cert, time.Time{})
+	test.AssertNotError(t, err, "inserting certificate")
+
+	setupDBMap, err := sa.NewDbMap(vars.DBConnSAFullPerms, sa.DbSettings{})
+	test.AssertNotError(t, err, "setting up DB")
+	err = setupDBMap.Insert(&core.FQDNSet{
+		SetHash: sa.HashNames(names),
+		Serial:  core.SerialToString(serial2),
+		Issued:  cert.Issued.Add(time.Hour),
+		Expires: cert.Expires.Add(time.Hour),
+	})
+	test.AssertNotError(t, err, "inserting FQDNSet for renewal")
+
+	err = testCtx.m.findExpiringCertificates(context.Background())
+	test.AssertNotError(t, err, "finding expired certificates")
+
+	// We should have examined exactly one certificate
+	certsExamined := testCtx.m.stats.certificatesExamined
+	test.AssertMetricWithLabelsEquals(t, certsExamined, prometheus.Labels{}, 1.0)
+
+	certsAlreadyRenewed := testCtx.m.stats.certificatesAlreadyRenewed
+	test.AssertMetricWithLabelsEquals(t, certsAlreadyRenewed, prometheus.Labels{}, 1.0)
+
+	// Run findExpiringCertificates again. The count of examined certificates
+	// should not increase again.
+	err = testCtx.m.findExpiringCertificates(context.Background())
+	test.AssertNotError(t, err, "finding expired certificates")
+	test.AssertMetricWithLabelsEquals(t, certsExamined, prometheus.Labels{}, 1.0)
+	test.AssertMetricWithLabelsEquals(t, certsAlreadyRenewed, prometheus.Labels{}, 1.0)
+}
+
+func TestProcessCertsParallel(t *testing.T) {
+	testCtx := setup(t, []time.Duration{time.Hour * 24 * 7})
+
+	testCtx.m.parallelSends = 2
+	certs := addExpiringCerts(t, testCtx)
+	testCtx.m.processCerts(context.Background(), certs)
+	// Test that the lastExpirationNagSent was updated for the certificate
+	// corresponding to serial4, which is set up as "already renewed" by
+	// addExpiringCerts.
+	if len(testCtx.log.GetAllMatching("DEBUG: SQL:  UPDATE certificateStatus .*2006-01-02 15:04:05.999999999.*\"000000000000000000000000000000001339\"")) != 1 {
+		t.Errorf("Expected an update to certificateStatus, got these log lines:\n%s",
+			strings.Join(testCtx.log.GetAllMatching(".*"), "\n"))
+	}
+}
+
+type erroringMailClient struct{}
+
+func (e erroringMailClient) Connect() (bmail.Conn, error) {
+	return nil, errors.New("whoopsie-doo")
+}
+
+func TestProcessCertsConnectError(t *testing.T) {
+	testCtx := setup(t, []time.Duration{time.Hour * 24 * 7})
+
+	testCtx.m.mailer = erroringMailClient{}
+	certs := addExpiringCerts(t, testCtx)
+	// Checking that this terminates rather than deadlocks
+	testCtx.m.processCerts(context.Background(), certs)
 }
 
 func TestFindExpiringCertificates(t *testing.T) {
@@ -201,12 +366,10 @@ func TestFindExpiringCertificates(t *testing.T) {
 
 	addExpiringCerts(t, testCtx)
 
-	log.Clear()
 	err := testCtx.m.findExpiringCertificates(context.Background())
 	test.AssertNotError(t, err, "Failed on no certificates")
-	test.AssertEquals(t, len(log.GetAllMatching("Searching for certificates that expire between.*")), 3)
+	test.AssertEquals(t, len(testCtx.log.GetAllMatching("Searching for certificates that expire between.*")), 3)
 
-	log.Clear()
 	err = testCtx.m.findExpiringCertificates(context.Background())
 	test.AssertNotError(t, err, "Failed to find expiring certs")
 	// Should get 001 and 003
@@ -235,14 +398,15 @@ func TestFindExpiringCertificates(t *testing.T) {
 	}, testCtx.mc.Messages[1])
 
 	// Check that regC's only certificate being renewed does not cause a log
-	test.AssertEquals(t, len(log.GetAllMatching("no certs given to send nags for")), 0)
+	test.AssertEquals(t, len(testCtx.log.GetAllMatching("no certs given to send nags for")), 0)
 
 	// A consecutive run shouldn't find anything
 	testCtx.mc.Clear()
-	log.Clear()
 	err = testCtx.m.findExpiringCertificates(context.Background())
 	test.AssertNotError(t, err, "Failed to find expiring certs")
 	test.AssertEquals(t, len(testCtx.mc.Messages), 0)
+	test.AssertMetricWithLabelsEquals(t, testCtx.m.stats.sendDelay, prometheus.Labels{"nag_group": "48h0m0s"}, 90000)
+	test.AssertMetricWithLabelsEquals(t, testCtx.m.stats.sendDelay, prometheus.Labels{"nag_group": "192h0m0s"}, 82800)
 }
 
 func makeRegistration(sac sapb.StorageAuthorityClient, id int64, jsonKey []byte, contacts []string) (*corepb.Registration, error) {
@@ -397,8 +561,6 @@ func TestFindCertsAtCapacity(t *testing.T) {
 
 	addExpiringCerts(t, testCtx)
 
-	log.Clear()
-
 	// Set the limit to 1 so we are "at capacity" with one result
 	testCtx.m.limit = 1
 
@@ -415,7 +577,6 @@ func TestFindCertsAtCapacity(t *testing.T) {
 
 	// A consecutive run shouldn't find anything
 	testCtx.mc.Clear()
-	log.Clear()
 	err = testCtx.m.findExpiringCertificates(context.Background())
 	test.AssertNotError(t, err, "Failed to find expiring certs")
 	test.AssertEquals(t, len(testCtx.mc.Messages), 0)
@@ -713,6 +874,7 @@ type testCtx struct {
 	mc      *mocks.Mailer
 	fc      clock.FakeClock
 	m       *mailer
+	log     *blog.Mock
 	cleanUp func()
 }
 
@@ -725,6 +887,7 @@ func setup(t *testing.T, nagTimes []time.Duration) *testCtx {
 	}
 
 	fc := newFakeClock(t)
+	log := blog.NewMock()
 	ssa, err := sa.NewSQLStorageAuthority(dbMap, dbMap, nil, nil, fc, log, metrics.NoopRegisterer, 1)
 	if err != nil {
 		t.Fatalf("unable to create SQLStorageAuthority: %s", err)
@@ -756,6 +919,7 @@ func setup(t *testing.T, nagTimes []time.Duration) *testCtx {
 		mc:      mc,
 		fc:      fc,
 		m:       m,
+		log:     log,
 		cleanUp: cleanUp,
 	}
 }

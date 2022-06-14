@@ -19,6 +19,7 @@ const (
 	StoreIssuerInfo
 	StreamlineOrderAndAuthzs
 	V1DisableNewValidations
+	ExpirationMailerDontLookTwice
 
 	//   Currently in-use features
 	// Check CAA and respect validationmethods parameter.
@@ -123,6 +124,7 @@ var features = map[FeatureFlag]bool{
 	OldTLSInbound:                  true,
 	SHA1CSRs:                       true,
 	AllowUnrecognizedFeatures:      false,
+	ExpirationMailerDontLookTwice:  false,
 }
 
 var fMu = new(sync.RWMutex)
