@@ -97,6 +97,9 @@ type Config struct {
 	//     `orders.certificateProfileName` column. Values in this column are
 	//     allowed to be empty.
 	MultipleCertificateProfiles bool
+
+	TestPost     bool
+	PleaseIgnore bool
 }
 
 var fMu = new(sync.RWMutex)
